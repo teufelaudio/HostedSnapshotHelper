@@ -9,6 +9,7 @@ private struct TaggedHostedTest: Hashable {
   let sourceTypeName: String?
   let functionName: String
   let body: String
+  let isThrowing: Bool
 }
 
 private enum GeneratorError: Error, CustomStringConvertible {
@@ -34,6 +35,20 @@ private final class HostedSnapshotCallCollector: SyntaxVisitor {
       return .skipChildren
     }
     return .visitChildren
+  }
+}
+
+private final class ThrowingBodyCollector: SyntaxVisitor {
+  private(set) var isThrowing = false
+
+  override func visit(_ node: TryExprSyntax) -> SyntaxVisitorContinueKind {
+    self.isThrowing = true
+    return .skipChildren
+  }
+
+  override func visit(_ node: ThrowStmtSyntax) -> SyntaxVisitorContinueKind {
+    self.isThrowing = true
+    return .skipChildren
   }
 }
 
@@ -107,6 +122,9 @@ private final class TaggedHostedTestCollector: SyntaxVisitor {
       return .skipChildren
     }
 
+    let throwingCollector = ThrowingBodyCollector(viewMode: .sourceAccurate)
+    throwingCollector.walk(body)
+
     self.hostedTests.append(
       TaggedHostedTest(
         filePath: self.filePath,
@@ -116,7 +134,8 @@ private final class TaggedHostedTestCollector: SyntaxVisitor {
         functionName: node.name.text,
         body: normalizeIndentation(
           body.statements.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
+        ),
+        isThrowing: throwingCollector.isThrowing
       )
     )
 
@@ -171,11 +190,11 @@ private func parseArguments() throws -> (packageRoot: URL, output: URL) {
 }
 
 private func collectTaggedHostedTests(in packageRoot: URL) throws -> [TaggedHostedTest] {
-  let testsRoot = packageRoot.appending(path: "Tests")
   let fileManager = FileManager.default
   guard let enumerator = fileManager.enumerator(
-    at: testsRoot,
-    includingPropertiesForKeys: nil
+    at: packageRoot,
+    includingPropertiesForKeys: [.isDirectoryKey],
+    options: [.skipsHiddenFiles, .skipsPackageDescendants]
   ) else {
     return []
   }
@@ -184,7 +203,22 @@ private func collectTaggedHostedTests(in packageRoot: URL) throws -> [TaggedHost
   var errors: [String] = []
 
   for case let fileURL as URL in enumerator {
+    if let values = try? fileURL.resourceValues(forKeys: [.isDirectoryKey]),
+      values.isDirectory == true
+    {
+      switch fileURL.lastPathComponent {
+      case ".build", ".git", ".swiftpm":
+        enumerator.skipDescendants()
+      default:
+        break
+      }
+      continue
+    }
+
     guard fileURL.pathExtension == "swift" else {
+      continue
+    }
+    guard fileURL.pathComponents.contains("Tests") else {
       continue
     }
 
@@ -306,8 +340,10 @@ private func renderTests(hostedTests: [TaggedHostedTest]) -> String {
     )
     let originalSnapshotDirectory = stringLiteral(snapshotDirectory(for: hostedTest))
     let originalTestName = stringLiteral(hostedTest.functionName)
+    let tryPrefix = hostedTest.isThrowing ? "try " : ""
+    let throwsClause = hostedTest.isThrowing ? " throws" : ""
     let wrappedBody = """
-      withHostedSnapshotContext(
+      \(tryPrefix)withHostedSnapshotContext(
         snapshotDirectory: \(originalSnapshotDirectory),
         testName: \(originalTestName)
       ) {
@@ -317,7 +353,7 @@ private func renderTests(hostedTests: [TaggedHostedTest]) -> String {
 
     return """
       @MainActor
-      func \(generatedName)() {
+      func \(generatedName)()\(throwsClause) {
     \(indent(wrappedBody, spaces: 4))
       }
     """
