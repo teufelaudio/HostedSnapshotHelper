@@ -72,7 +72,7 @@ import XCTest
   @MainActor
   public func assertHostedSnapshot<Content: View>(
     of view: @autoclosure () -> Content,
-    on config: ViewImageConfig = .iPhone13Pro,
+    on config: ViewImageConfig,
     style: UIUserInterfaceStyle = .light,
     wait: TimeInterval = 1,
     named name: String? = nil,
