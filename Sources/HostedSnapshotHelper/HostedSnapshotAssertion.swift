@@ -14,14 +14,10 @@ import XCTest
 
   public typealias HostedSnapshotDevice = (name: String, device: ViewImageConfig)
 
-  private let defaultHostedSnapshotDevices: [HostedSnapshotDevice] = [
-    ("iPhone13Pro", .iPhone13Pro),
-  ]
-
   @MainActor
   public func assertHostedSnapshot<Content: View>(
     of view: @autoclosure () -> Content,
-    devices: [HostedSnapshotDevice] = defaultHostedSnapshotDevices,
+    devices: [HostedSnapshotDevice] = [("iPhone13Pro", .iPhone13Pro)],
     style: Set<ColorScheme> = [.light],
     wait: TimeInterval = 1,
     named name: String? = nil,
