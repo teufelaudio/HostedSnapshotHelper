@@ -149,8 +149,11 @@ And you can customize hosted assertions similarly to `assertSnapshot(...)` wrapp
 ```swift
 assertHostedSnapshot(
   of: sut,
-  on: .iPhoneSe,
-  style: .dark,
+  devices: [
+    ("iPhoneSE3rdGen", .iPhoneSE3rdGen),
+    ("iPadPro12_9", .iPadPro12_9(.portrait)),
+  ],
+  style: [.light, .dark],
   wait: 0.5,
   named: "dark",
   record: nil,
@@ -262,12 +265,32 @@ extension Trait where Self == ConditionTrait {
 @MainActor
 public func assertHostedSnapshot<Content: View>(
   of view: @autoclosure () -> Content,
+  devices: [HostedSnapshotDevice] = [("iPhone13Pro", .iPhone13Pro)],
+  style: Set<ColorScheme> = [.light],
+  wait: TimeInterval = 1,
+  named name: String? = nil,
+  record recording: Bool? = nil,
+  timeout: TimeInterval = 5,
+  precision: Float = 1,
+  perceptualPrecision: Float = 1,
+  fileID: StaticString = #fileID,
+  file filePath: StaticString = #filePath,
+  testName: String = #function,
+  line: UInt = #line,
+  column: UInt = #column
+)
+
+@MainActor
+public func assertHostedSnapshot<Content: View>(
+  of view: @autoclosure () -> Content,
   on config: ViewImageConfig = .iPhone13Pro,
   style: UIUserInterfaceStyle = .light,
   wait: TimeInterval = 1,
   named name: String? = nil,
   record recording: Bool? = nil,
   timeout: TimeInterval = 5,
+  precision: Float = 1,
+  perceptualPrecision: Float = 1,
   fileID: StaticString = #fileID,
   file filePath: StaticString = #filePath,
   testName: String = #function,
