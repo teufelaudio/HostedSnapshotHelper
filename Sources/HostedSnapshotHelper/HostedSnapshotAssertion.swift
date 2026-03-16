@@ -19,7 +19,7 @@ import XCTest
     of view: @autoclosure () -> Content,
     devices: [HostedSnapshotDevice] = [("iPhone13Pro", .iPhone13Pro)],
     style: Set<ColorScheme> = [.light],
-    wait: TimeInterval = 1,
+    wait: TimeInterval = 0,
     named name: String? = nil,
     record recording: Bool? = nil,
     timeout: TimeInterval = 5,
@@ -74,7 +74,7 @@ import XCTest
     of view: @autoclosure () -> Content,
     on config: ViewImageConfig,
     style: UIUserInterfaceStyle = .light,
-    wait: TimeInterval = 1,
+    wait: TimeInterval = 0,
     named name: String? = nil,
     record recording: Bool? = nil,
     timeout: TimeInterval = 5,
@@ -150,6 +150,7 @@ import XCTest
     let windowSize = config.size ?? sceneBounds.size
     window.frame = CGRect(origin: .zero, size: windowSize)
     window.overrideUserInterfaceStyle = style
+    window.backgroundColor = .systemBackground
     window.rootViewController = viewController
 
     viewController.view.backgroundColor = .clear
