@@ -144,6 +144,20 @@ func testSheetOpenState() {
 }
 ```
 
+And you can customize hosted assertions similarly to `assertSnapshot(...)` wrappers:
+
+```swift
+assertHostedSnapshot(
+  of: sut,
+  on: .iPhoneSe,
+  style: .dark,
+  wait: 0.5,
+  named: "dark",
+  record: nil,
+  timeout: 5
+)
+```
+
 ### What `.requiresKeyWindow` Does
 
 `.requiresKeyWindow` is a custom `Testing` trait provided by this package.
@@ -249,11 +263,16 @@ extension Trait where Self == ConditionTrait {
 public func assertHostedSnapshot<Content: View>(
   of view: @autoclosure () -> Content,
   on config: ViewImageConfig = .iPhone13Pro,
-  named name: String? = nil,
+  style: UIUserInterfaceStyle = .light,
   wait: TimeInterval = 1,
-  file: StaticString = #filePath,
+  named name: String? = nil,
+  record recording: Bool? = nil,
+  timeout: TimeInterval = 5,
+  fileID: StaticString = #fileID,
+  file filePath: StaticString = #filePath,
   testName: String = #function,
-  line: UInt = #line
+  line: UInt = #line,
+  column: UInt = #column
 )
 ```
 

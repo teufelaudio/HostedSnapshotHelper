@@ -16,28 +16,38 @@ import XCTest
   public func assertHostedSnapshot<Content: View>(
     of view: @autoclosure () -> Content,
     on config: ViewImageConfig = .iPhone13Pro,
-    named name: String? = nil,
+    style: UIUserInterfaceStyle = .light,
     wait: TimeInterval = 1,
-    file: StaticString = #filePath,
+    named name: String? = nil,
+    record recording: Bool? = nil,
+    timeout: TimeInterval = 5,
+    fileID: StaticString = #fileID,
+    file filePath: StaticString = #filePath,
     testName: String = #function,
-    line: UInt = #line
+    line: UInt = #line,
+    column: UInt = #column
   ) {
     let image = renderHostedSnapshotImage(
       of: UIHostingController(rootView: view()),
       on: config,
+      style: style,
       wait: wait
     )
     let failure = verifySnapshot(
       of: image,
       as: .image,
       named: name,
+      record: recording,
       snapshotDirectory: HostedSnapshotContext.snapshotDirectory,
-      file: file,
+      timeout: timeout,
+      fileID: fileID,
+      file: filePath,
       testName: HostedSnapshotContext.testName ?? testName,
-      line: line
+      line: line,
+      column: column
     )
     guard let failure else { return }
-    XCTFail(failure, file: file, line: line)
+    XCTFail(failure, file: filePath, line: line)
   }
 
   @MainActor
@@ -64,10 +74,9 @@ import XCTest
   private func renderHostedSnapshotImage(
     of viewController: UIViewController,
     on config: ViewImageConfig,
+    style: UIUserInterfaceStyle = .light,
     wait: TimeInterval
   ) -> UIImage {
-    _ = config
-
     guard
       let windowScene = UIApplication.shared.connectedScenes
         .compactMap({ $0 as? UIWindowScene })
@@ -79,8 +88,9 @@ import XCTest
     let originalKeyWindow = windowScene.windows.first(where: \.isKeyWindow)
     let window = UIWindow(windowScene: windowScene)
     let sceneBounds = windowScene.coordinateSpace.bounds
-    window.frame = sceneBounds
-    window.overrideUserInterfaceStyle = .light
+    let windowSize = config.size ?? sceneBounds.size
+    window.frame = CGRect(origin: .zero, size: windowSize)
+    window.overrideUserInterfaceStyle = style
     window.rootViewController = viewController
 
     viewController.view.backgroundColor = .clear
