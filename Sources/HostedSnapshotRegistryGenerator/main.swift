@@ -2,6 +2,12 @@ import Foundation
 import SwiftParser
 import SwiftSyntax
 
+private struct GenerationUnit {
+  let packageRoot: URL
+  let output: URL
+  let suiteName: String
+}
+
 private struct TaggedHostedTest: Hashable {
   let filePath: String
   let imports: [String]
@@ -153,40 +159,61 @@ private final class TaggedHostedTestCollector: SyntaxVisitor {
   }
 }
 
-private func parseArguments() throws -> (packageRoot: URL, output: URL) {
+private func parseArguments() throws -> [GenerationUnit] {
   let arguments = Array(CommandLine.arguments.dropFirst())
-  guard arguments.count == 4 else {
+  guard !arguments.isEmpty else {
     throw GeneratorError.usage(
-      "Usage: HostedSnapshotRegistryGenerator --package-root <path> --output <path>"
+      "Usage: HostedSnapshotRegistryGenerator (--package <path>)+ --output-dir <path>"
     )
   }
 
-  var packageRoot: String?
-  var output: String?
+  var packageRoots: [String] = []
+  var outputDirectory: String?
   var index = 0
 
   while index < arguments.count {
     let flag = arguments[index]
+    guard index + 1 < arguments.count else {
+      throw GeneratorError.usage("Missing value for argument: \(flag)")
+    }
     let value = arguments[index + 1]
+
     switch flag {
-    case "--package-root":
-      packageRoot = value
-    case "--output":
-      output = value
+    case "--package":
+      packageRoots.append(value)
+    case "--output-dir":
+      if outputDirectory != nil {
+        throw GeneratorError.usage("The --output-dir argument may only be provided once.")
+      }
+      outputDirectory = value
     default:
       throw GeneratorError.usage("Unknown argument: \(flag)")
     }
+
     index += 2
   }
 
-  guard let packageRoot, let output else {
-    throw GeneratorError.usage("Both --package-root and --output are required.")
+  guard !packageRoots.isEmpty else {
+    throw GeneratorError.usage("At least one --package argument is required.")
+  }
+  guard let outputDirectory else {
+    throw GeneratorError.usage("The --output-dir argument is required.")
   }
 
-  return (
-    packageRoot: URL(fileURLWithPath: packageRoot),
-    output: URL(fileURLWithPath: output)
-  )
+  let outputDirectoryURL = URL(fileURLWithPath: outputDirectory)
+  return packageRoots.map { packageRoot in
+    let packageName = URL(fileURLWithPath: packageRoot)
+      .lastPathComponent
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let safePackageName = sanitizeIdentifier(packageName)
+    let suiteName = "\(safePackageName)HostedSnapshotTests"
+    let outputFileName = "\(suiteName).generated.swift"
+    return GenerationUnit(
+      packageRoot: URL(fileURLWithPath: packageRoot),
+      output: outputDirectoryURL.appending(path: outputFileName),
+      suiteName: suiteName
+    )
+  }
 }
 
 private func collectTaggedHostedTests(in packageRoot: URL) throws -> [TaggedHostedTest] {
@@ -265,7 +292,13 @@ private func sanitizeIdentifier(_ rawValue: String) -> String {
   }
 
   let identifier = String(sanitized).trimmingCharacters(in: CharacterSet(charactersIn: "_"))
-  return identifier.isEmpty ? "hostedSnapshot" : identifier
+  guard !identifier.isEmpty else {
+    return "hostedSnapshot"
+  }
+  if let firstCharacter = identifier.first, firstCharacter.isNumber {
+    return "_\(identifier)"
+  }
+  return identifier
 }
 
 private func indent(_ text: String, spaces: Int) -> String {
@@ -327,9 +360,9 @@ private func snapshotDirectory(for hostedTest: TaggedHostedTest) -> String {
     .path
 }
 
-private func renderTests(hostedTests: [TaggedHostedTest]) -> String {
+private func renderTests(hostedTests: [TaggedHostedTest], suiteName: String) -> String {
   let imports = Set(hostedTests.flatMap(\.imports))
-    .union(["import XCTest"])
+    .union(["import Testing"])
     .sorted()
     .joined(separator: "\n")
 
@@ -352,6 +385,7 @@ private func renderTests(hostedTests: [TaggedHostedTest]) -> String {
     """
 
     return """
+      @Test
       @MainActor
       func \(generatedName)()\(throwsClause) {
     \(indent(wrappedBody, spaces: 4))
@@ -365,7 +399,8 @@ private func renderTests(hostedTests: [TaggedHostedTest]) -> String {
 
   \(imports)
 
-  final class GeneratedHostedSnapshotTests: XCTestCase {
+  @Suite
+  struct \(suiteName) {
   \(indent(testMethods, spaces: 2))
   }
   """
@@ -395,10 +430,11 @@ private func writeOutput(_ content: String, to outputURL: URL) throws {
 }
 
 do {
-  let arguments = try parseArguments()
-  let hostedTests = try collectTaggedHostedTests(in: arguments.packageRoot)
-  let output = renderTests(hostedTests: hostedTests)
-  try writeOutput(output, to: arguments.output)
+  for generationUnit in try parseArguments() {
+    let hostedTests = try collectTaggedHostedTests(in: generationUnit.packageRoot)
+    let output = renderTests(hostedTests: hostedTests, suiteName: generationUnit.suiteName)
+    try writeOutput(output, to: generationUnit.output)
+  }
 } catch {
   fputs("\(error)\n", stderr)
   exit(1)
