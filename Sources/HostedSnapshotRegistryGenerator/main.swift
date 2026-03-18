@@ -11,6 +11,8 @@ private struct GenerationUnit {
 private struct TaggedHostedTest: Hashable {
   let filePath: String
   let imports: [String]
+  let localSupportDeclarations: [String]
+  let globalSupportDeclarations: [String]
   let sourceFileName: String
   let sourceTypeName: String?
   let functionName: String
@@ -135,6 +137,8 @@ private final class TaggedHostedTestCollector: SyntaxVisitor {
       TaggedHostedTest(
         filePath: self.filePath,
         imports: self.imports,
+        localSupportDeclarations: [],
+        globalSupportDeclarations: [],
         sourceFileName: self.sourceFileName,
         sourceTypeName: self.typeNameStack.last,
         functionName: node.name.text,
@@ -251,8 +255,23 @@ private func collectTaggedHostedTests(in packageRoot: URL) throws -> [TaggedHost
 
     let source = try String(contentsOf: fileURL, encoding: .utf8)
     let collector = TaggedHostedTestCollector(filePath: fileURL.path)
-    collector.walk(Parser.parse(source: source))
-    hostedTests.append(contentsOf: collector.hostedTests)
+    let parsedSource = Parser.parse(source: source)
+    collector.walk(parsedSource)
+    let supportDeclarations = collectTopLevelSupportDeclarations(in: parsedSource)
+    let hostedTestsForFile = collector.hostedTests.map {
+      TaggedHostedTest(
+        filePath: $0.filePath,
+        imports: $0.imports,
+        localSupportDeclarations: supportDeclarations.localDeclarations,
+        globalSupportDeclarations: supportDeclarations.globalDeclarations,
+        sourceFileName: $0.sourceFileName,
+        sourceTypeName: $0.sourceTypeName,
+        functionName: $0.functionName,
+        body: $0.body,
+        isThrowing: $0.isThrowing
+      )
+    }
+    hostedTests.append(contentsOf: hostedTestsForFile)
     errors.append(contentsOf: collector.errors)
   }
 
@@ -279,6 +298,51 @@ private func collectTaggedHostedTests(in packageRoot: URL) throws -> [TaggedHost
     ($0.sourceFileName, $0.sourceTypeName ?? "", $0.functionName, $0.filePath)
       < ($1.sourceFileName, $1.sourceTypeName ?? "", $1.functionName, $1.filePath)
   }
+}
+
+private func collectTopLevelSupportDeclarations(in sourceFile: SourceFileSyntax) -> (
+  localDeclarations: [String],
+  globalDeclarations: [String]
+) {
+  var localDeclarations: [String] = []
+  var globalDeclarations: [String] = []
+
+  for statement in sourceFile.statements {
+    if let functionDeclaration = statement.item.as(FunctionDeclSyntax.self) {
+      localDeclarations.append(normalizeLocalDeclaration(functionDeclaration.description))
+      continue
+    }
+    if let variableDeclaration = statement.item.as(VariableDeclSyntax.self) {
+      localDeclarations.append(normalizeLocalDeclaration(variableDeclaration.description))
+      continue
+    }
+    if let extensionDeclaration = statement.item.as(ExtensionDeclSyntax.self) {
+      globalDeclarations.append(extensionDeclaration.description)
+      continue
+    }
+  }
+
+  return (localDeclarations, globalDeclarations)
+}
+
+private func normalizeLocalDeclaration(_ declaration: String) -> String {
+  let trimmed = declaration.trimmingCharacters(in: .whitespacesAndNewlines)
+  let modifiers = ["fileprivate ", "private ", "internal ", "public ", "open "]
+  for modifier in modifiers where trimmed.hasPrefix(modifier) {
+    return String(trimmed.dropFirst(modifier.count))
+  }
+  return trimmed
+}
+
+private func orderedUniqueDeclarations(_ declarations: [String]) -> [String] {
+  var seen: Set<String> = []
+  var ordered: [String] = []
+  for declaration in declarations {
+    if seen.insert(declaration).inserted {
+      ordered.append(declaration)
+    }
+  }
+  return ordered
 }
 
 private func sanitizeIdentifier(_ rawValue: String) -> String {
@@ -366,6 +430,16 @@ private func renderTests(hostedTests: [TaggedHostedTest], suiteName: String) -> 
     .sorted()
     .joined(separator: "\n")
 
+  let globalSupportDeclarations = orderedUniqueDeclarations(
+    hostedTests.flatMap(\.globalSupportDeclarations)
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+  )
+  let renderedGlobalSupportDeclarations = globalSupportDeclarations.joined(separator: "\n\n")
+  let globalSupportSection = renderedGlobalSupportDeclarations.isEmpty
+    ? ""
+    : "\(renderedGlobalSupportDeclarations)\n\n"
+
   let testMethods = hostedTests.map { hostedTest in
     let typeName = hostedTest.sourceTypeName ?? hostedTest.sourceFileName
     let generatedName = sanitizeIdentifier(
@@ -383,12 +457,26 @@ private func renderTests(hostedTests: [TaggedHostedTest], suiteName: String) -> 
       \(indent(hostedTest.body, spaces: 2))
       }
     """
+    let localSupportDeclarations = hostedTest.localSupportDeclarations
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .joined(separator: "\n\n")
+    let renderedBody: String
+    if localSupportDeclarations.isEmpty {
+      renderedBody = indent(wrappedBody, spaces: 4)
+    } else {
+      renderedBody = """
+    \(indent(localSupportDeclarations, spaces: 4))
+
+    \(indent(wrappedBody, spaces: 4))
+    """
+    }
 
     return """
       @Test
       @MainActor
       func \(generatedName)()\(throwsClause) {
-    \(indent(wrappedBody, spaces: 4))
+    \(renderedBody)
       }
     """
   }
@@ -399,7 +487,7 @@ private func renderTests(hostedTests: [TaggedHostedTest], suiteName: String) -> 
 
   \(imports)
 
-  @Suite
+  \(globalSupportSection)@Suite
   struct \(suiteName) {
   \(indent(testMethods, spaces: 2))
   }
