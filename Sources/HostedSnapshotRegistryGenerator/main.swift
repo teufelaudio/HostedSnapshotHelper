@@ -8,6 +8,16 @@ private struct GenerationUnit {
   let suiteName: String
 }
 
+private struct ParsedArguments {
+  let generationUnits: [GenerationUnit]
+  let dependenciesFileList: URL?
+}
+
+private struct HostedTestCollectionResult {
+  let hostedTests: [TaggedHostedTest]
+  let taggedSourceFiles: [String]
+}
+
 private struct TaggedHostedTest: Hashable {
   let filePath: String
   let imports: [String]
@@ -157,22 +167,25 @@ private final class TaggedHostedTestCollector: SyntaxVisitor {
       guard let attribute = element.as(AttributeSyntax.self) else {
         return false
       }
-      return attribute.attributeName.trimmedDescription == "Test"
+      return ["Test", "Tag"].contains(attribute.attributeName.trimmedDescription)
         && attribute.trimmedDescription.contains(".requiresKeyWindow")
     }
   }
 }
 
-private func parseArguments() throws -> [GenerationUnit] {
+private func parseArguments() throws -> ParsedArguments {
   let arguments = Array(CommandLine.arguments.dropFirst())
   guard !arguments.isEmpty else {
     throw GeneratorError.usage(
-      "Usage: HostedSnapshotRegistryGenerator (--package <path>)+ --output-dir <path>"
+      """
+      Usage: HostedSnapshotRegistryGenerator (--package <path>)+ --output-dir <path> [--dependencies-file-list <path>]
+      """
     )
   }
 
   var packageRoots: [String] = []
   var outputDirectory: String?
+  var dependenciesFileList: String?
   var index = 0
 
   while index < arguments.count {
@@ -190,6 +203,11 @@ private func parseArguments() throws -> [GenerationUnit] {
         throw GeneratorError.usage("The --output-dir argument may only be provided once.")
       }
       outputDirectory = value
+    case "--dependencies-file-list":
+      if dependenciesFileList != nil {
+        throw GeneratorError.usage("The --dependencies-file-list argument may only be provided once.")
+      }
+      dependenciesFileList = value
     default:
       throw GeneratorError.usage("Unknown argument: \(flag)")
     }
@@ -205,7 +223,7 @@ private func parseArguments() throws -> [GenerationUnit] {
   }
 
   let outputDirectoryURL = URL(fileURLWithPath: outputDirectory)
-  return packageRoots.map { packageRoot in
+  let generationUnits = packageRoots.map { packageRoot in
     let packageName = URL(fileURLWithPath: packageRoot)
       .lastPathComponent
       .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -218,19 +236,24 @@ private func parseArguments() throws -> [GenerationUnit] {
       suiteName: suiteName
     )
   }
+  return ParsedArguments(
+    generationUnits: generationUnits,
+    dependenciesFileList: dependenciesFileList.map { URL(fileURLWithPath: $0) }
+  )
 }
 
-private func collectTaggedHostedTests(in packageRoot: URL) throws -> [TaggedHostedTest] {
+private func collectTaggedHostedTests(in packageRoot: URL) throws -> HostedTestCollectionResult {
   let fileManager = FileManager.default
   guard let enumerator = fileManager.enumerator(
     at: packageRoot,
     includingPropertiesForKeys: [.isDirectoryKey],
     options: [.skipsHiddenFiles, .skipsPackageDescendants]
   ) else {
-    return []
+    return HostedTestCollectionResult(hostedTests: [], taggedSourceFiles: [])
   }
 
   var hostedTests: [TaggedHostedTest] = []
+  var taggedSourceFiles: Set<String> = []
   var errors: [String] = []
 
   for case let fileURL as URL in enumerator {
@@ -271,6 +294,9 @@ private func collectTaggedHostedTests(in packageRoot: URL) throws -> [TaggedHost
         isThrowing: $0.isThrowing
       )
     }
+    if !hostedTestsForFile.isEmpty {
+      taggedSourceFiles.insert(fileURL.path)
+    }
     hostedTests.append(contentsOf: hostedTestsForFile)
     errors.append(contentsOf: collector.errors)
   }
@@ -294,10 +320,13 @@ private func collectTaggedHostedTests(in packageRoot: URL) throws -> [TaggedHost
     throw GeneratorError.validation(errors)
   }
 
-  return hostedTests.sorted {
-    ($0.sourceFileName, $0.sourceTypeName ?? "", $0.functionName, $0.filePath)
-      < ($1.sourceFileName, $1.sourceTypeName ?? "", $1.functionName, $1.filePath)
-  }
+  return HostedTestCollectionResult(
+    hostedTests: hostedTests.sorted {
+      ($0.sourceFileName, $0.sourceTypeName ?? "", $0.functionName, $0.filePath)
+        < ($1.sourceFileName, $1.sourceTypeName ?? "", $1.functionName, $1.filePath)
+    },
+    taggedSourceFiles: taggedSourceFiles.sorted()
+  )
 }
 
 private func collectTopLevelSupportDeclarations(in sourceFile: SourceFileSyntax) -> (
@@ -518,10 +547,22 @@ private func writeOutput(_ content: String, to outputURL: URL) throws {
 }
 
 do {
-  for generationUnit in try parseArguments() {
-    let hostedTests = try collectTaggedHostedTests(in: generationUnit.packageRoot)
-    let output = renderTests(hostedTests: hostedTests, suiteName: generationUnit.suiteName)
+  let parsedArguments = try parseArguments()
+  var dependencies: Set<String> = []
+
+  for generationUnit in parsedArguments.generationUnits {
+    let collection = try collectTaggedHostedTests(in: generationUnit.packageRoot)
+    dependencies.formUnion(collection.taggedSourceFiles)
+    let output = renderTests(hostedTests: collection.hostedTests, suiteName: generationUnit.suiteName)
     try writeOutput(output, to: generationUnit.output)
+  }
+
+  if let dependenciesFileList = parsedArguments.dependenciesFileList {
+    let sortedDependencies = dependencies.sorted()
+    let fileListContent = sortedDependencies.isEmpty
+      ? ""
+      : "\(sortedDependencies.joined(separator: "\n"))\n"
+    try writeOutput(fileListContent, to: dependenciesFileList)
   }
 } catch {
   fputs("\(error)\n", stderr)

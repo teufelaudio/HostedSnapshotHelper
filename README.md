@@ -206,6 +206,14 @@ Typical setup:
 - app test target links `HostedSnapshotHelper`
 - generated XCTest file is written into the app test target's source directory
 
+## Example Project
+
+A full working example lives in `Examples/`:
+
+- `Examples/Foo` is the package under test
+- `Examples/SnapshotsInPackages` is the host app
+- `Examples/SnapshotsInPackagesTests/HostedSnapshotTests.generated.swift` is generated from tagged package tests
+
 ## Xcode Build Phase
 
 Add a Run Script build phase so the host app regenerates the hosted test file before building tests.
@@ -215,7 +223,8 @@ Example:
 ```sh
 set -eu
 
-OUTPUT_FILE="${SRCROOT}/MyAppTests/HostedSnapshotTests.generated.swift"
+OUTPUT_DIR="${SRCROOT}/MyAppTests"
+DEPENDENCIES_FILE_LIST="${SRCROOT}/MyAppTests/HostedSnapshotDependencies.xcfilelist"
 PACKAGE_ROOT="${SRCROOT}/FeaturePackage"
 HELPER_ROOT="${SRCROOT}/HostedSnapshotHelper"
 
@@ -223,8 +232,9 @@ env -u SDKROOT -u PLATFORM_NAME -u EFFECTIVE_PLATFORM_NAME -u ARCHS \
   xcrun --sdk macosx swift run \
   --package-path "$HELPER_ROOT" \
   HostedSnapshotRegistryGenerator \
-  --package-root "$PACKAGE_ROOT" \
-  --output "$OUTPUT_FILE"
+  --package "$PACKAGE_ROOT" \
+  --output-dir "$OUTPUT_DIR" \
+  --dependencies-file-list "$DEPENDENCIES_FILE_LIST"
 ```
 
 Notes:
@@ -233,7 +243,11 @@ Notes:
   The generator is a macOS host tool, not an iOS binary.
 - unset `SDKROOT`, `PLATFORM_NAME`, `EFFECTIVE_PLATFORM_NAME`, and `ARCHS`
   Xcode can leak iOS build settings into `swift run`, which breaks SwiftPM manifest evaluation.
-- write the generated file into the host app test target directory
+- write generated files into the host app test target directory via `--output-dir`
+  (`<PackageName>HostedSnapshotTests.generated.swift`)
+- pass `--dependencies-file-list` to emit an `.xcfilelist` with all tagged test source files (`@Test(.requiresKeyWindow)`)
+- add `$(SRCROOT)/HostedSnapshotDependencies.xcfilelist` to the build phase **Input File Lists**
+  so the script phase only reruns when those tagged files change
 - if you integrate `HostedSnapshotHelper` as a remote Xcode package instead of a sibling checkout, `HELPER_ROOT` is typically:
   `"$SOURCEPACKAGES_DIR_PATH/checkouts/HostedSnapshotHelper"`
 
@@ -302,7 +316,10 @@ public func assertHostedSnapshot<Content: View>(
 Executable:
 
 ```sh
-HostedSnapshotRegistryGenerator --package-root <path> --output <path>
+HostedSnapshotRegistryGenerator \
+  (--package <path>)+ \
+  --output-dir <path> \
+  [--dependencies-file-list <path>]
 ```
 
 ## Constraints
