@@ -167,9 +167,21 @@ private final class TaggedHostedTestCollector: SyntaxVisitor {
       guard let attribute = element.as(AttributeSyntax.self) else {
         return false
       }
-      return ["Test", "Tag"].contains(attribute.attributeName.trimmedDescription)
-        && attribute.trimmedDescription.contains(".requiresKeyWindow")
+      guard attribute.attributeName.trimmedDescription == "Test" else {
+        return false
+      }
+      guard let arguments = attribute.arguments else {
+        return false
+      }
+      return self.containsRequiresKeyWindowTrait(in: arguments.trimmedDescription)
     }
+  }
+
+  private func containsRequiresKeyWindowTrait(in argumentDescription: String) -> Bool {
+    argumentDescription.range(
+      of: #"(?<![\w])\.requiresKeyWindow(?:\s*\(|\b)"#,
+      options: .regularExpression
+    ) != nil
   }
 }
 
