@@ -17,7 +17,12 @@ import XCTest
   @MainActor
   public func assertHostedSnapshot<Content: View>(
     of view: @autoclosure () -> Content,
-    devices: [HostedSnapshotDevice] = [("iPhone13Pro", .iPhone13Pro)],
+    devices: [HostedSnapshotDevice] = [
+        ("iPhone8", .iPhone8),
+        ("iPhone13ProMax", .iPhone13ProMax),
+        ("iPadMinithGen", .iPadMini(.portrait)),
+        ("iPadPro12_9", .iPadPro12_9(.portrait))
+    ],
     style: Set<ColorScheme> = [.light],
     wait: TimeInterval = 0,
     named name: String? = nil,
