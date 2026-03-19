@@ -86,7 +86,7 @@ private final class TaggedHostedTestCollector: SyntaxVisitor {
 
   override func visit(_ node: ImportDeclSyntax) -> SyntaxVisitorContinueKind {
     let path = node.path.trimmedDescription
-    if ["Testing", "SnapshotTesting"].contains(path) {
+    if path == "Testing" {
       return .skipChildren
     }
     self.imports.append(node.trimmedDescription)
