@@ -1,6 +1,6 @@
 # HostedSnapshotHelper
 
-`HostedSnapshotHelper` lets you keep snapshot tests in a Swift package while re-running the key-window cases inside a host app test target.
+Enables recording of views in Swift packages that need a key window.
 
 This is useful for UI that does not render correctly in a package-only snapshot test, such as:
 
@@ -9,62 +9,68 @@ This is useful for UI that does not render correctly in a package-only snapshot 
 - `.alert`
 - confirmation dialogs
 - anything else that needs a real key window
+- views containing a `Toggle` control from iOS 26 onward
 
-The host app is only used for rendering. Recorded PNGs are still written back to the package that owns the tests.
+## The problem
 
-## Why
-
-If you snapshot a SwiftUI view directly from a package test, a presented sheet or alert is often missing from the image because there is no real key window:
+You are a good citizen and split your app into multiple packages. However, when you snapshot the views in the package, you notice something odd.
 
 ```swift
 @Test
-func testSheetOpenState() {
-  let sut = FeatureView(isSheetPresented: true)
-
-  assertSnapshot(
-    of: sut,
-    as: .image(layout: .device(config: .iPhoneSe))
-  )
+func testClosedState() {
+  let sut = SheetView(isSheetPresented: true, toggleOn: false)
+  assertSnapshot(of: sut, as: .image(layout: .device(config: .iPhone13)))
 }
 ```
 
-`HostedSnapshotHelper` solves this by:
+The snapshot does not show the sheet and, from iOS 26 onward, the `Toggle` has no content 🤔
 
-1. marking key-window tests in the package
-2. generating matching XCTest methods in a host app test target
-3. rendering those tests in a real app window
-4. saving the resulting snapshots back into the package's `__Snapshots__` folder
+![An iOS snapshot where the toggle looks odd and the sheet is missing](Media/plain_spm_snapshot.png)
 
-## What It Contains
+The problem: the view needs a key window in order to show the sheet and properly draw the toggle.
 
-- `HostedSnapshotHelper`
-  A library product for package tests and generated host-app tests.
-- `HostedSnapshotRegistryGenerator`
-  An executable that scans package test sources and generates the host-app XCTest file.
+You _could_ move all tests to the main app project, but that would break your carefully crafted architecture.
 
-## Package Installation
-
-Add the package to the package-under-test and to the host app project:
-
-- GitHub: `https://github.com/teufelaudio/HostedSnapshotHelper`
-- local checkout during development: `.package(path: "../HostedSnapshotHelper")`
-
-Until the first tagged release exists, use a branch-based dependency such as:
+## The solution
 
 ```swift
-.package(url: "https://github.com/teufelaudio/HostedSnapshotHelper", branch: "main")
+@Test(.requiresKeyWindow)
+func testSheetViewSheetOpenState() {
+  let sut = SheetView(isSheetPresented: true, toggleOn: false)
+  assertHostedSnapshot(of: sut, devices: [("iPhone13", .iPhone13)], wait: 1.0)
+}
 ```
 
-After the first release, prefer a versioned dependency.
+You annotate tests with `@Test(.requiresKeyWindow)` and call `assertHostedSnapshot(...)`. Et voila:
 
-The package itself currently supports:
+![An iOS snapshot rendered with a hosted key window](Media/hosted_snapshot.png)
 
-- iOS 26+
-- macOS 13+
+## How it works
 
-## Package Under Test
+It is a bit dirty 😅
 
-Add `HostedSnapshotHelper` to the package that owns the Swift Testing snapshot tests.
+1. A code generator scans your package tests for `@Test` methods tagged with `.requiresKeyWindow`.
+2. It generates a new Swift Testing suite in your host app test target.
+3. The generated tests run inside the app-hosted environment and render snapshot images with a real key window.
+4. `verifySnapshot(...)` from [swift-snapshot-testing](https://github.com/pointfreeco/swift-snapshot-testing) compares those images to references.
+5. If no reference image exists, the new image is written back to the package's `__Snapshots__` folder next to your regular package snapshots.
+
+You can tell from this description that the process is brittle. But you cannot have your cake and eat it too.
+
+## Installation
+
+Add the package to both places:
+
+- the package under test
+- the host app Xcode project
+
+```swift
+.package(url: "https://github.com/teufelaudio/HostedSnapshotHelper.git", from: "0.0.1")
+```
+
+### Package under test
+
+Add `HostedSnapshotHelper` to the package that owns your Swift Testing snapshot tests.
 
 Example:
 
@@ -77,7 +83,7 @@ let package = Package(
   name: "FeaturePackage",
   dependencies: [
     .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.0.0"),
-    .package(url: "https://github.com/teufelaudio/HostedSnapshotHelper", branch: "main"),
+    .package(url: "https://github.com/teufelaudio/HostedSnapshotHelper.git", from: "0.0.1"),
   ],
   targets: [
     .target(name: "Feature"),
@@ -93,7 +99,7 @@ let package = Package(
 )
 ```
 
-## Writing Tests
+### Writing tests
 
 Keep ordinary snapshots unchanged:
 
@@ -116,7 +122,7 @@ struct FeatureSnapshotTests {
 }
 ```
 
-For key-window cases, split them into their own tests and use `assertHostedSnapshot(of:)`:
+For key-window cases, tag the test with `@Test(.requiresKeyWindow)` and use `assertHostedSnapshot(of:)`:
 
 ```swift
 import SnapshotTesting
@@ -134,17 +140,7 @@ struct FeatureSnapshotTests {
 }
 ```
 
-You can also provide a custom disable message:
-
-```swift
-@Test(.requiresKeyWindow("Hosted snapshots run in the app-hosted test suite."))
-func testSheetOpenState() {
-  let sut = FeatureView(isSheetPresented: true)
-  assertHostedSnapshot(of: sut)
-}
-```
-
-And you can customize hosted assertions similarly to `assertSnapshot(...)` wrappers:
+You can customize hosted assertions much like `assertSnapshot(...)` wrappers:
 
 ```swift
 assertHostedSnapshot(
@@ -161,14 +157,14 @@ assertHostedSnapshot(
 )
 ```
 
-### What `.requiresKeyWindow` Does
+### What `.requiresKeyWindow` does
 
 `.requiresKeyWindow` is a custom `Testing` trait provided by this package.
 
-In the package test target it behaves like:
+In package tests, it behaves like this:
 
-- disable this test by default
-- keep it discoverable by the generator
+- disable hosted tests by default
+- keep them discoverable by the generator
 
 If you want to run those package tests directly anyway, set:
 
@@ -176,47 +172,36 @@ If you want to run those package tests directly anyway, set:
 RUN_HOSTED_PACKAGE_TESTS=1
 ```
 
-## Generator Rules
+You can also provide a custom disable message:
 
-The generator scans the package's `Tests` directory and looks for `@Test` declarations containing `.requiresKeyWindow`.
+```swift
+@Test(.requiresKeyWindow("Hosted snapshots run in the app-hosted test suite."))
+func testSheetOpenState() {
+  let sut = FeatureView(isSheetPresented: true)
+  assertHostedSnapshot(of: sut)
+}
+```
 
-For each hosted test, it requires:
-
-- exactly one `assertHostedSnapshot(...)` call
-- a self-contained test body that can be replayed in the host app test target
-
-It preserves:
-
-- the test body
-- non-`Testing` and non-`SnapshotTesting` imports from the source file
-- the original package snapshot directory
-- the original package test name
-
-That last point is important: hosted snapshots are rendered in the app, but saved in the package's snapshot folder.
-
-## Host App Integration
+### Host app integration
 
 Add the package to the host app Xcode project and link `HostedSnapshotHelper` in the host app test target.
 
-The host app test target must also be able to import the package-under-test.
+The host app test target must also be able to import the package under test.
 
 Typical setup:
 
 - app target imports the feature package normally
 - app test target links `HostedSnapshotHelper`
-- generated XCTest file is written into the app test target's source directory
+- generated Swift Testing host file is written into the app test target's source directory
 
-## Example Project
+It is recommended to create a test plan that includes both:
 
-A full working example lives in `Examples/`:
+- tests from the Swift package
+- tests from the host app
 
-- `Examples/Foo` is the package under test
-- `Examples/SnapshotsInPackages` is the host app
-- `Examples/SnapshotsInPackagesTests/HostedSnapshotTests.generated.swift` is generated from tagged package tests
+### Xcode build phase
 
-## Xcode Build Phase
-
-Add a Run Script build phase so the host app regenerates the hosted test file before building tests.
+Add a Run Script build phase so the host app regenerates hosted tests before running tests.
 
 Example:
 
@@ -245,96 +230,42 @@ Notes:
   Xcode can leak iOS build settings into `swift run`, which breaks SwiftPM manifest evaluation.
 - write generated files into the host app test target directory via `--output-dir`
   (`<PackageName>HostedSnapshotTests.generated.swift`)
-- pass `--dependencies-file-list` to emit an `.xcfilelist` with all tagged test source files (`@Test(.requiresKeyWindow)`)
-- add `$(SRCROOT)/HostedSnapshotDependencies.xcfilelist` to the build phase **Input File Lists**
+- pass `--dependencies-file-list` to emit an `.xcfilelist` containing all tagged test source files (`@Test(.requiresKeyWindow)`)
+- add `$(SRCROOT)/MyAppTests/HostedSnapshotDependencies.xcfilelist` to the build phase **Input File Lists**
   so the script phase only reruns when those tagged files change
 - if you integrate `HostedSnapshotHelper` as a remote Xcode package instead of a sibling checkout, `HELPER_ROOT` is typically:
   `"$SOURCEPACKAGES_DIR_PATH/checkouts/HostedSnapshotHelper"`
 
-## Generated XCTest File
+### Generator rules
 
-The generated file contains XCTest methods that replay the tagged package tests inside the host app test target.
+The generator scans Swift files in the package and looks for tests under `Tests` that are tagged with `.requiresKeyWindow`.
 
-Those generated tests call into `assertHostedSnapshot(of:)`, which:
+For each hosted test, it requires:
 
-- creates a temporary key `UIWindow`
-- renders the view in a real app scene
-- waits for presentation to settle
-- captures the full hosted window
-- saves the image into the package snapshot directory
+- exactly one `assertHostedSnapshot(...)` call
+- a self-contained test body that can be replayed in the host app test target
 
-## API Summary
+It preserves:
 
-Library:
+- the test body
+- non-`Testing` imports from the source file
+- top-level support declarations (for example helper functions and extensions)
+- the original package snapshot directory
+- the original package test name
 
-```swift
-extension Trait where Self == ConditionTrait {
-  public static var requiresKeyWindow: Self { get }
-  public static func requiresKeyWindow(
-    _ comment: Comment? = nil,
-    sourceLocation: SourceLocation = #_sourceLocation
-  ) -> Self
-}
+That last point is important: hosted snapshots are rendered in the app, but saved in the package's snapshot folder.
 
-@MainActor
-public func assertHostedSnapshot<Content: View>(
-  of view: @autoclosure () -> Content,
-  devices: [HostedSnapshotDevice] = [("iPhone13Pro", .iPhone13Pro)],
-  style: Set<ColorScheme> = [.light],
-  wait: TimeInterval = 1,
-  named name: String? = nil,
-  record recording: Bool? = nil,
-  timeout: TimeInterval = 5,
-  precision: Float = 1,
-  perceptualPrecision: Float = 1,
-  fileID: StaticString = #fileID,
-  file filePath: StaticString = #filePath,
-  testName: String = #function,
-  line: UInt = #line,
-  column: UInt = #column
-)
+### Constraints
 
-@MainActor
-public func assertHostedSnapshot<Content: View>(
-  of view: @autoclosure () -> Content,
-  on config: ViewImageConfig,
-  style: UIUserInterfaceStyle = .light,
-  wait: TimeInterval = 1,
-  named name: String? = nil,
-  record recording: Bool? = nil,
-  timeout: TimeInterval = 5,
-  precision: Float = 1,
-  perceptualPrecision: Float = 1,
-  fileID: StaticString = #fileID,
-  file filePath: StaticString = #filePath,
-  testName: String = #function,
-  line: UInt = #line,
-  column: UInt = #column
-)
-```
+- each tagged hosted test must contain exactly one `assertHostedSnapshot(...)` call
+- tagged tests should avoid wrappers that hide or duplicate hosted assertions
+- imports used by tagged package tests must also be valid in the host app test target
 
-Executable:
+### Example project
 
-```sh
-HostedSnapshotRegistryGenerator \
-  (--package <path>)+ \
-  --output-dir <path> \
-  [--dependencies-file-list <path>]
-```
+A full working example lives in `Example/`:
 
-## Constraints
+- `Example/LocalExamplePackage` is the package under test
+- `Example/SnapshotsInPackages` is the host app
+- `Example/SnapshotsInPackagesTests/LocalExamplePackageHostedSnapshotTests.generated.swift` is generated from tagged package tests
 
-- hosted tests must call `assertHostedSnapshot(...)` directly
-- the generator currently expects exactly one hosted assertion per tagged test
-- tagged tests should avoid extra wrappers around the hosted assertion
-- any imports used by the tagged package test must also be valid in the host app test target
-
-## Xcode Tips
-
-If you want package tests to show normal run controls in Xcode:
-
-- open a workspace that contains both the host app project and the Swift package
-- select the package scheme when running package tests directly
-- use an iOS Simulator destination
-
-If the package tests are wrapped in `#if canImport(UIKit)`, they will not appear when the active destination is `My Mac`.
